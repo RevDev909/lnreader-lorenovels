@@ -22,10 +22,25 @@ await build({
   outfile: `.dist/lorenovels-${version}.js`,
   logLevel: 'info',
   footer: {
-    // Matches the lnreader-nightjarreads / lnreader-wetriedtls builds:
-    // esbuild emits `exports.default = plugin_default`; the host app
-    // reads `module.exports.default`, so wire it up explicitly.
-    js: 'try { if (typeof module !== "undefined" && module && module.exports) module.exports.default = plugin_default; } catch (e) {}',
+    // LNReader loads the bundle with:
+    //   Function('require','module', `const exports = module.exports = {};
+    //     ${rawCode}; return exports.default`)(_require, {})
+    // esbuild's CJS output REASSIGNS module.exports to a new object, so
+    // the wrapper's `exports` (the original object) would have no
+    // `default` and initPlugin would return undefined -> "installation
+    // error". Copy the default export onto the original `exports`
+    // object as well. (The lnreader-nightjarreads/wetriedtls builds do
+    // `exports.default = plugin_default;` for the same reason.)
+    js: [
+      'try {',
+      '  if (typeof exports !== "undefined" && exports) {',
+      '    exports.default = (typeof plugin_default !== "undefined")',
+      '      ? plugin_default',
+      '      : (typeof module !== "undefined" && module && module.exports ? module.exports.default : undefined);',
+      '  }',
+      '} catch (e) {}',
+      'try { if (typeof module !== "undefined" && module && module.exports) module.exports.default = plugin_default; } catch (e) {}',
+    ].join('\n'),
   },
 });
 
