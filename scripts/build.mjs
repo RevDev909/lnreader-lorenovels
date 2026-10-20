@@ -19,6 +19,11 @@ await build({
   bundle: true,
   format: 'cjs',
   platform: 'neutral',
+  // Plugin code is executed RAW by the app's JS engine (Hermes) via
+  // `new Function()` — no babel transform. Target ES2019 so modern
+  // syntax the engine may not parse (class fields, ?. ??) is compiled
+  // away; async/await and classes stay native (Hermes supports them).
+  target: 'es2019',
   outfile: `.dist/lorenovels-${version}.js`,
   logLevel: 'info',
   footer: {

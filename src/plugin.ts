@@ -164,7 +164,7 @@ class Lorenovels implements Plugin.PluginBase {
   name = 'Lorenovels';
   icon = 'src/en/lorenovels/icon.png';
   site = 'https://lorenovels.com';
-  version = '1.0.1';
+  version = '1.0.2';
 
   // slug -> cover URL, built once per session from the homepage cards.
   // The novel pages themselves don't show covers, so without this the
