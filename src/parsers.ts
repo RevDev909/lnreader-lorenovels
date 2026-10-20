@@ -60,13 +60,23 @@ export function decodeHtmlEntities(s: string): string {
       (m, e: string) => HTML_ENTITY_CHARS[e] ?? m,
     )
     .replace(/&#(\d+);/g, (_m, n: string) => {
-      const cp = parseInt(n, 10);
-      return cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : '�';
+      return codePointToString(parseInt(n, 10));
     })
     .replace(/&#x([0-9a-fA-F]+);/g, (_m, n: string) => {
-      const cp = parseInt(n, 16);
-      return cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : '�';
+      return codePointToString(parseInt(n, 16));
     });
+}
+
+/**
+ * String.fromCodePoint equivalent built on String.fromCharCode (ES1).
+ * Plugin code runs raw on the app's JS engine with no polyfills, so no
+ * ES2015+ runtime API may be assumed.
+ */
+function codePointToString(cp: number): string {
+  if (isNaN(cp) || cp < 0 || cp > 0x10ffff) return '�';
+  if (cp <= 0xffff) return String.fromCharCode(cp);
+  const v = cp - 0x10000;
+  return String.fromCharCode(0xd800 + (v >> 10), 0xdc00 + (v & 0x3ff));
 }
 
 function stripTags(s: string): string {

@@ -1,51 +1,55 @@
 // Build the LNReader plugin bundle into .dist/ and refresh plugins.min.json.
+//
+// Pipeline mirrors the lnreader-nightjarreads / lnreader-wetriedtls
+// builds: tsc compiles TypeScript to ES5 CommonJS first, then esbuild
+// bundles it. Plugin code is executed RAW by the app's JS engine
+// (Hermes) with no babel transform and no polyfills, so the final
+// bundle must be ES5 + Promise/Map/Set only — native async functions,
+// classes, class fields, const/let, arrows and ?. ?? all break older
+// app versions (verified: native async killed installs on LNReader
+// 2.0.0 while 2.1.4 accepted it).
 import { build } from 'esbuild';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
+import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 
 const REPO = 'RevDev909/lnreader-lorenovels';
 const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
 const version = pkg.version;
 
 mkdirSync('.dist', { recursive: true });
+rmSync('.tsc-build', { recursive: true, force: true });
 
-// Type-check first so type errors fail the build loudly.
-const { execSync } = await import('node:child_process');
-execSync('npx tsc --noEmit --strict --skipLibCheck --target es2020 --lib es2020,dom src/plugin.ts src/parsers.ts', {
-  stdio: 'inherit',
-});
+// 1. Type-check first so type errors fail the build loudly.
+execSync(
+  'npx tsc --noEmit --strict --skipLibCheck --target es2020 --lib es2020,dom src/plugin.ts src/parsers.ts',
+  { stdio: 'inherit' },
+);
 
+// 2. Compile to ES5 CommonJS. --downlevelIteration for the for-of over
+// a Map in ensureCoverMap; async/await becomes tsc's __awaiter state
+// machine (no native generators needed).
+execSync(
+  'npx tsc src/plugin.ts src/parsers.ts' +
+    ' --target es5 --module commonjs --lib es2020,dom' +
+    ' --strict --skipLibCheck --downlevelIteration' +
+    ' --outDir .tsc-build --declaration false --sourceMap false',
+  { stdio: 'inherit' },
+);
+
+// 3. Bundle. tsc's `exports.default = ...` assignments pass through
+// untouched, which is exactly what the app's loader reads
+// (`return exports.default`).
 await build({
-  entryPoints: ['src/plugin.ts'],
+  entryPoints: ['.tsc-build/plugin.js'],
   bundle: true,
   format: 'cjs',
   platform: 'neutral',
-  // Plugin code is executed RAW by the app's JS engine (Hermes) via
-  // `new Function()` — no babel transform. Target ES2019 so modern
-  // syntax the engine may not parse (class fields, ?. ??) is compiled
-  // away; async/await and classes stay native (Hermes supports them).
-  target: 'es2019',
+  target: 'es5',
   outfile: `.dist/lorenovels-${version}.js`,
   logLevel: 'info',
   footer: {
-    // LNReader loads the bundle with:
-    //   Function('require','module', `const exports = module.exports = {};
-    //     ${rawCode}; return exports.default`)(_require, {})
-    // esbuild's CJS output REASSIGNS module.exports to a new object, so
-    // the wrapper's `exports` (the original object) would have no
-    // `default` and initPlugin would return undefined -> "installation
-    // error". Copy the default export onto the original `exports`
-    // object as well. (The lnreader-nightjarreads/wetriedtls builds do
-    // `exports.default = plugin_default;` for the same reason.)
-    js: [
-      'try {',
-      '  if (typeof exports !== "undefined" && exports) {',
-      '    exports.default = (typeof plugin_default !== "undefined")',
-      '      ? plugin_default',
-      '      : (typeof module !== "undefined" && module && module.exports ? module.exports.default : undefined);',
-      '  }',
-      '} catch (e) {}',
-      'try { if (typeof module !== "undefined" && module && module.exports) module.exports.default = plugin_default; } catch (e) {}',
-    ].join('\n'),
+    // Belt and braces, same as the reference builds.
+    js: 'try { if (typeof module !== "undefined" && module && module.exports) module.exports.default = plugin_default; } catch (e) {}',
   },
 });
 
