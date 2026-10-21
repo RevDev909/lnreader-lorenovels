@@ -88,6 +88,7 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 
 interface RawFetchResult {
   status?: number;
+  retryAfter?: number;
   text: string;
 }
 
@@ -98,7 +99,18 @@ async function fetchRaw(url: string): Promise<RawFetchResult> {
       res && typeof res.status === 'number' ? res.status : undefined;
     const text =
       res && typeof res.text === 'function' ? await res.text() : '';
-    return { status, text };
+    // Retry-After only matters on 429; parse it defensively and cap it
+    // at 10s so a hostile header can't stall the retry loop.
+    let retryAfter: number | undefined;
+    const rawHeader =
+      res && res.headers && typeof res.headers.get === 'function'
+        ? res.headers.get('retry-after')
+        : undefined;
+    if (typeof rawHeader === 'string') {
+      const parsed = parseInt(rawHeader, 10);
+      if (!isNaN(parsed) && parsed >= 0) retryAfter = Math.min(parsed, 10);
+    }
+    return { status, retryAfter, text };
   }
   if (typeof fetchLib.fetchText === 'function') {
     return { text: await fetchLib.fetchText(url) };
@@ -116,9 +128,11 @@ async function fetchText(url: string): Promise<string> {
   let lastError: any = new Error('Request failed');
   for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt++) {
     let status: number | undefined;
+    let retryAfterSecs: number | undefined;
     try {
       const res = await withTimeout(fetchRaw(url), FETCH_TIMEOUT_MS);
       status = res.status;
+      retryAfterSecs = res.retryAfter;
       if (status === 429 || (status !== undefined && status >= 500)) {
         throw new Error('Server responded with HTTP ' + status);
       }
@@ -126,6 +140,7 @@ async function fetchText(url: string): Promise<string> {
     } catch (e) {
       lastError = e;
       if (status === undefined) status = statusFromError(e);
+      (lastError as any).status = status;
       const msg = String((e && (e as Error).message) || e || '');
       const retryable =
         status === undefined ||
@@ -133,8 +148,12 @@ async function fetchText(url: string): Promise<string> {
         status >= 500 ||
         /timed out/i.test(msg);
       if (!retryable || attempt === MAX_FETCH_ATTEMPTS) break;
-      // Exponential backoff with jitter: ~1s, ~2s. Gentle on the site.
-      await sleep(1000 * Math.pow(2, attempt - 1) + Math.random() * 500);
+      // Exponential backoff with jitter, or Retry-After on 429.
+      const waitSecs =
+        status === 429 && retryAfterSecs !== undefined
+          ? retryAfterSecs
+          : Math.pow(2, attempt - 1);
+      await sleep(1000 * waitSecs + Math.random() * 500);
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
@@ -164,7 +183,7 @@ class Lorenovels implements Plugin.PluginBase {
   name = 'Lorenovels';
   icon = 'src/en/lorenovels/icon.png';
   site = 'https://lorenovels.com';
-  version = '1.0.3';
+  version = '1.0.4';
 
   // slug -> cover URL, built once per session from the homepage cards.
   // The novel pages themselves don't show covers, so without this the
@@ -266,7 +285,11 @@ class Lorenovels implements Plugin.PluginBase {
     }));
   }
 
-  resolveUrl = (path: string, _isNovel?: boolean): string => this.site + path;
+  resolveUrl = (path: string, _isNovel?: boolean) => {
+    if (/^https?:\/\//i.test(path)) return path;
+    if (path.indexOf('//') === 0) return 'https:' + path;
+    return this.site + path;
+  };
 }
 
 export default new Lorenovels();
